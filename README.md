@@ -3,4 +3,22 @@ Implementation of [molecular cross validation](https://www.biorxiv.org/content/1
 
 The intent is for this to be used as part of a Seurat workflow to identify the ideal number of principal components to use in a rigorous way.  Refer to comments in the code for more detailed documentation.  
 
+A simple example of this in a Seurat (V2) workflow would be:
 
+
+```
+source('code.R')
+#Load data and do basic Seurat 
+srat = Read10X(srcs)
+srat = CreateSeuratObject(srat)
+srat = NormalizeData(srat)
+srat = FindVariableGenes(srat,do.plot=FALSE)
+#Work out the number of PCs
+mcv = molecularCrossValidation(srat,normalisation=minimalSeurat)
+nPCs = mcv$minimas[1]
+#Downstream analysis
+srat = ScaleData(srat)
+srat = RunPCA(srat,pcs.compute=nPCs)
+...
+
+```
