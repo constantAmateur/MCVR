@@ -15,6 +15,7 @@ srat = NormalizeData(srat)
 srat = FindVariableGenes(srat,do.plot=FALSE)
 #Work out the number of PCs
 mcv = molecularCrossValidation(srat,normalisation=minimalSeurat)
+plotMCV(mcv)
 nPCs = mcv$minimas[1]
 #Downstream analysis
 srat = ScaleData(srat)
