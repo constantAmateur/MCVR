@@ -13,25 +13,26 @@ library(Seurat)
 partitionData = function(src,alpha,p,tFrac){
   #Do we need to titrate?  If so do that first.
   src = as(src,'dgTMatrix')
+  x = src@x
+  i = src@i
+  j = src@j
   if(tFrac<1)
-    src@x = rbinom(length(src@x),src@x,tFrac)
+    x = rbinom(length(x),x,tFrac)
   #Adjust p by titration fraction
   p = p *tFrac
   #Now work out p' and p''
   p1 = (1+alpha-sqrt((1+alpha)**2-4*alpha*p))/(2*alpha)
   p2 = p1*alpha
   #Construct the training sample
-  train = src
-  train@x = rbinom(length(train@x),train@x,p1/p)
+  trx = rbinom(length(x),x,p1/p)
   #Construct the test sample, including an overlap adjustment.
-  tst = src
-  tst@x = tst@x-train@x + rbinom(length(train@x),train@x,p2)
+  tsx = x-trx + rbinom(length(trx),trx,p2)
   #Reformat the training data into the matrix
-  w = which(train@x>0)
-  train = sparseMatrix(x=train@x[w],i=train@i[w]+1,j=train@j[w]+1,dims=dim(train),dimnames=dimnames(train))
+  w = which(trx>0)
+  train = sparseMatrix(x=trx[w],i=i[w]+1,j=j[w]+1,dims=dim(src),dimnames=dimnames(src))
   #Reformat the test data into the matrix
-  w = which(tst@x>0)
-  tst = sparseMatrix(x=tst@x[w],i=tst@i[w]+1,j=tst@j[w]+1,dims=dim(tst),dimnames=dimnames(tst))
+  w = which(tsx>0)
+  tst = sparseMatrix(x=tsx[w],i=i[w]+1,j=j[w]+1,dims=dim(src),dimnames=dimnames(src))
   return(list(tst,train))
 }
 
@@ -48,14 +49,41 @@ minimalSeurat = function(dat){
   return(ss@scale.data)
 }
 
+#' Same as above, but for Seurat V3.
+minimalSeuratV3 = function(dat){
+  ss = CreateSeuratObject(dat)
+  ss = NormalizeData(ss,verbose=FALSE)
+  ss = ScaleData(ss,verbose=FALSE)
+  return(ss@assays$RNA@scale.data)
+}
+
+#' Round stochastically to integers
+#' 
+#' Round each count up to an integer in a sparse matrix with probability equal to fractional part.
+#'
+#' @param dat An input matrix of things to round.
+#' @return A sparse martix.
+roundToInt = function(dat){
+  dat = as(dat,'dgTMatrix')
+  dat = sparseMatrix(x = floor(dat@x) + rbinom(length(dat@x),1,dat@x%%1),
+                     i = dat@i+1,
+                     j = dat@j+1,
+                     dims = dim(dat),
+                     dimnames = dimnames(dat))
+  return(dat)
+}
+
+
+
+
 #' Finds the optimal number of PCs to use
 #'
 #' Uses molecular cross validation method (https://www.biorxiv.org/content/10.1101/786269v1), which must be applied to raw count data, to determine the optimal number of PCs to use for a given data-set.  This is intended to be run as part of a Seurat v2 workflow, but is written so that it can be used in a general context.  If supplying a seurat object, FindVariableGenes must have been run, otherwise a set of genes on which to perform the principal component analysis must be supplied.
 #'
 #' Arbitrary normalisation requires equal splits of data.  To check that 50/50 split does not unde-estimate the number of PCs, it is useful to perform a series of "titrations" of tha data, to check the number of PCs is not sensative to the sampling depth.  There is no relationship between the optimum number of PCs for un-normalised data and normalised data, so it is best to live with the limitations of normalising data (50/50 split, need to titrate) than to do find the optimum for a type of normalisation you will not use in practice.
 #'
-#' @param srat Seurat object which contains the raw data and has been processed up to "FindVariableGenes" or a sparse matrix with raw UMI counts, with cells as columns and genes as rows.  If the latter, varGenes must also be specified.
-#' @param varGenes Variable genes to use to perform the principal component analysis.  If missing, \code{srat} is assumed to be a Seurat object and the variable genes are extracted from it.
+#' @param dat Data matrix with rows being genes, columns being cells, and counts being integers.
+#' @param varGenes Variable genes to use to perform the principal component analysis.
 #' @param trainFrac Fraction of data to be used for training.
 #' @param p Fraction of total molecules sampled in experiment.
 #' @param tFracs Titration fractions.  A vector indicating how to sub-sample the data to test if results are sensative to the depth of sampling.  If NULL, just run one version with all the data.
@@ -63,22 +91,28 @@ minimalSeurat = function(dat){
 #' @param maxPCs Check up to this many PCs.
 #' @param approxPCA Use irlba instead of prcomp to speed up PCA at the expense of some accuracy.  Other things take so much longer in the analysis, please don't use approximate PCA.
 #' @param errorMetric Type of error to calculate.  Options are mse for mean squared erorr, or poisson, which calculates something proportional to the mean poisson log likelihood.
-#' @param nSEs To quantify the sampling error, this function also returns those PCs within this many standard errors of the global minimum mean error. 1.96 corresponds to 95% confidence interval.
-#' @param doPlot Make the standard plots?
+#' @param poissonMin If the PCs predict a number of counts below this value, use this instead to prevent infinite log-likelihood and penalise predicting zeros/negative values. 
+#' @param confInt Used in quantifying the sampling error.  The function returns any PC that is within this confidence interval of the  minimum mean error.
+#' @param ... Extra parameters passed to normalisation function.
 #' @return A list.  Contains the average error across all cells for each titration and split of the data and various summaries thereof. 
-molecularCrossValidation = function(srat,varGenes,trainFrac=0.5,p=0.01,tFracs=c(1,0.9,0.8,0.5,0.1),nSplits=5,normalisation=minimalSeurat,maxPCs=100,approxPCA=FALSE,errorMetric=c('mse','poisson'),nSEs=1.96,doPlot=TRUE){
+#'
+#' @examples
+#' #Assuming srat is a Seurat v2.x object that has had FindVariableGenes run
+#' mcv = molecularCrossValidation(srat@raw.data,srat@var.genes)
+#' #If it is a v3.x object
+#' mcv = molecularCrossValidation(srat@assays$RNA@count,srat@assays$RNA@var.features,normalisation=minimalSeuratV3)
+molecularCrossValidation = function(dat,varGenes,trainFrac=0.5,p=0.01,tFracs=c(1,0.9,0.8,0.5),nSplits=5,normalisation=minimalSeurat,maxPCs=100,approxPCA=FALSE,errorMetric=c('mse','poisson'),poissonMin=1e-6,confInt=0.95,...){
   errorMetric = match.arg(errorMetric)
-  if(missing(varGenes))
-    varGenes = srat@var.genes
-  #If it's a seurat object, extract data
-  if(is.null(dim(srat))){
-    dat = srat@raw.data
-  }else{
-    dat = srat
-  }
   if(is.null(tFracs))
     tFracs=1
   titrate = length(tFracs)>1 || tFracs<1
+  #Convert to number std. errors
+  nSEs = qnorm(confInt/2 +0.5)
+  #Convert to sparse Matrix of a useful type
+  dat = as(dat,'dgTMatrix')
+  #Check that input data are integer counts
+  if(any(dat@x%%1!=0))
+    stop("Input matrix must contain only integers.")
   #If normalisation is on, have to do equal splits so we don't need to calculate complicated scale factor
   if(!identical(normalisation,identity)){
     #Arbitrary normalisation, have to have 50/50 split.
@@ -89,6 +123,8 @@ molecularCrossValidation = function(srat,varGenes,trainFrac=0.5,p=0.01,tFracs=c(
     if(!titrate){
       warning("When performing arbitrary normalisation it is useful to perform several titrations (by setting tFracs) to ensure results are not sensative to depth.  Consider re-running with tFracs set.")
     }
+    if(errorMetric=='poisson')
+      warning("Poisson error is not appropriate for non-count data.  Ensure your normalisation produces counts if you wish to proceed with this error profile.")
   }
   #Work out alpha
   alpha = (1-trainFrac)/trainFrac
@@ -104,8 +140,8 @@ molecularCrossValidation = function(srat,varGenes,trainFrac=0.5,p=0.01,tFracs=c(
       message(sprintf("Performing split %d of %d",i,nSplits)) 
       tst = partitionData(dat,alpha,p,tFrac)
       #Normalise data
-      train = normalisation(tst[[2]])[varGenes,]
-      tst = normalisation(tst[[1]])[varGenes,]
+      train = normalisation(tst[[2]],...)[varGenes,]
+      tst = normalisation(tst[[1]],...)[varGenes,]
       #Normalise data
       #Run PCA on training data.
       message("Running PCA and cross-validating")
@@ -129,16 +165,10 @@ molecularCrossValidation = function(srat,varGenes,trainFrac=0.5,p=0.01,tFracs=c(
         }else if(errorMetric=='poisson'){
           a = as.vector(tmp*alpha)
           b = as.vector(tst)
-          #Ignore the entries that would give infinite likelihood (where mean<=0 and tst>0)
-          w = which(a>0 | b==0)
-          a=a[w]
-          b=b[w]
-          #The ones where both are 0 need separate processing
-          ww = which(a<=0 & b==0)
-          nww = which(!(a<=0 & b==0))
-          mse[i,k-1] = (sum(a[ww]) + sum(a[nww] - b[nww]*log(a[nww])))/length(w)
-        }else{
-          stop('Oh No!')
+          #Fix those that are below minimum
+          a[a<poissonMin]=poissonMin
+          #Calculate poisson negative log likelihood
+          mse[i,k-1] = -1*mean(dpois(b,a,log=TRUE))
         }
       }
       close(pb)
@@ -156,27 +186,13 @@ molecularCrossValidation = function(srat,varGenes,trainFrac=0.5,p=0.01,tFracs=c(
   ses = lapply(titrates,function(e) apply(e,2,sd)/sqrt(nSplits))
   ses = do.call(cbind,ses)
   #Find out the PCs that are within x standard errors of the minimum mean error
-  seMins = t(t(means-nSEs*ses) < apply(means,2,min))
+  seMins = t(t(means-nSEs*ses) <= apply(means,2,min))
   seMins = apply(seMins,2,which)
-  if(doPlot){
-    #Work out normalisation factors
-    normFacs = apply(lower,2,min)
-    #Define plot area
-    yRange = c(1,max(t(upper)/normFacs))
-    layout(matrix(c(1,1,2),nrow=3))
-    plot(0,0,type='n',xlab='Number of PCs',ylab='avg error / min avg error',ylim=yRange,xlim=c(2,maxPCs),frame.plot=FALSE,main='Error profiles')
-    #Make lower,middle and upper plots
-    for(i in seq_along(titrates)){
-      lines(seq(2,maxPCs),lower[,i]/normFacs[i],col=i,lty=2)
-      lines(seq(2,maxPCs),means[,i]/normFacs[i],col=i)
-      lines(seq(2,maxPCs),upper[,i]/normFacs[i],col=i,lty=2)
-    }
-    #abline(v=mins,col=seq(ncol(x)))
-    legend(mean(mins),yRange[2],legend=paste0(round(tFracs*100),'% Data, ',round(trainFrac*100),'% train (Min = ',mins,')'),col=seq_along(titrates),lty=1)
-    plot(tFracs*100,mins,pch=19,xlab='Data percentage',ylab='Optimal #PCs',main='Convergance',ylim=range(seq(2,maxPCs)[unlist(seMins)]))
-    lines(tFracs*100,mins)
-    #Add error bars
-    arrows(tFracs*100, seq(2,maxPCs)[sapply(seMins,min)], tFracs*100,seq(2,maxPCs)[sapply(seMins,max)], length=0.05, angle=90, code=3)
+  #Ensure formating the same
+  if(length(titrates)==1){
+    seMins = list(as.numeric(rownames(seMins)))
+  }else{
+    seMins = lapply(seMins,function(e) as.numeric(names(e)))
   }
   if(length(titrates)==1)
     titrates=titrates[[1]]
@@ -191,4 +207,34 @@ molecularCrossValidation = function(srat,varGenes,trainFrac=0.5,p=0.01,tFracs=c(
   return(out)
 }
 
-
+#' Plots summary of MCV run
+#' 
+#' Plots normalised loss curves for each titration of data as returned by molecularCrossValidation.
+#' 
+#' @param mcv Output of molecularCrossValidation.
+#' @param cols Colours to apply to each titration line.
+#' @return Nothing.  Produces a plot.
+plotMCV = function(mcv,cols=seq(ncol(mcv$lower))){
+  pcs = as.numeric(rownames(mcv$means))
+  titrates = mcv$errors
+  if(!is.list(titrates))
+    titrates = list(titrates)
+  #Work out normalisation factors
+  normFacs = apply(mcv$lower,2,min)
+  #Define plot area
+  yRange = c(1,max(t(mcv$upper)/normFacs))
+  layout(matrix(c(1,1,2),nrow=3))
+  plot(0,0,type='n',xlab='Number of PCs',ylab='avg error / min avg error',ylim=yRange,xlim=range(pcs),frame.plot=FALSE,main='Error profiles')
+  #Make lower,middle and upper plots
+  for(i in seq_along(titrates)){
+    lines(pcs,mcv$lower[,i]/normFacs[i],col=cols[i],lty=2)
+    lines(pcs,mcv$means[,i]/normFacs[i],col=cols[i])
+    lines(pcs,mcv$upper[,i]/normFacs[i],col=cols[i],lty=2)
+  }
+  #abline(v=mcv$minimas,col=seq(ncol(x)))
+  legend(mean(mcv$minimas),yRange[2],legend=paste0(round(mcv$titrations*100),'% Data (Min = ',mcv$minimas,')'),col=cols,lty=1)
+  plot(mcv$titrations*100,mcv$minimas,pch=19,xlab='Data percentage',ylab='Optimal #PCs',main='Convergance',ylim=range(pcs[unlist(mcv$mins1sd)]))
+  lines(mcv$titrations*100,mcv$minimas)
+  #Add error bars
+  arrows(mcv$titrations*100, pcs[sapply(mcv$mins1sd,min)], mcv$titrations*100,pcs[sapply(mcv$mins1sd,max)], length=0.05, angle=90, code=3)
+}
