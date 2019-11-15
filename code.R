@@ -78,16 +78,16 @@ roundToInt = function(dat){
 
 #' Finds the optimal number of PCs to use
 #'
-#' Uses molecular cross validation method (https://www.biorxiv.org/content/10.1101/786269v1), which must be applied to raw count data, to determine the optimal number of PCs to use for a given data-set.  This is intended to be run as part of a Seurat v2 workflow, but is written so that it can be used in a general context.  If supplying a seurat object, FindVariableGenes must have been run, otherwise a set of genes on which to perform the principal component analysis must be supplied.
+#' Uses molecular cross validation method (https://www.biorxiv.org/content/10.1101/786269v1), which must be applied to raw count data, to determine the optimal number of PCs to use for a given data-set.  This is intended to be run as part of a Seurat workflow, but is written so that it can be used in a general context.  If supplying a seurat object, FindVariableGenes must have been run, otherwise a set of genes on which to perform the principal component analysis must be supplied.
 #'
 #' Arbitrary normalisation requires equal splits of data.  To check that 50/50 split does not unde-estimate the number of PCs, it is useful to perform a series of "titrations" of tha data, to check the number of PCs is not sensative to the sampling depth.  There is no relationship between the optimum number of PCs for un-normalised data and normalised data, so it is best to live with the limitations of normalising data (50/50 split, need to titrate) than to do find the optimum for a type of normalisation you will not use in practice.
 #'
 #' @param dat Data matrix with rows being genes, columns being cells, and counts being integers.
-#' @param varGenes Variable genes to use to perform the principal component analysis.
+#' @param varGenes Variable genes to use to perform the principal component analysis.  If NULL all genes are used.
 #' @param trainFrac Fraction of data to be used for training.
 #' @param p Fraction of total molecules sampled in experiment.
 #' @param tFracs Titration fractions.  A vector indicating how to sub-sample the data to test if results are sensative to the depth of sampling.  If NULL, just run one version with all the data.
-#' @param nSplits The number of random splits of the data to performe.
+#' @param nSplits The number of random splits of the data to perform.
 #' @param maxPCs Check up to this many PCs.
 #' @param approxPCA Use irlba instead of prcomp to speed up PCA at the expense of some accuracy.  Other things take so much longer in the analysis, please don't use approximate PCA.
 #' @param errorMetric Type of error to calculate.  Options are mse for mean squared erorr, or poisson, which calculates something proportional to the mean poisson log likelihood.
@@ -101,8 +101,10 @@ roundToInt = function(dat){
 #' mcv = molecularCrossValidation(srat@raw.data,srat@var.genes)
 #' #If it is a v3.x object
 #' mcv = molecularCrossValidation(srat@assays$RNA@count,srat@assays$RNA@var.features,normalisation=minimalSeuratV3)
-molecularCrossValidation = function(dat,varGenes,trainFrac=0.5,p=0.01,tFracs=c(1,0.9,0.8,0.5),nSplits=5,normalisation=minimalSeurat,maxPCs=100,approxPCA=FALSE,errorMetric=c('mse','poisson'),poissonMin=1e-6,confInt=0.95,...){
+molecularCrossValidation = function(dat,varGenes=NULL,trainFrac=0.5,p=0.01,tFracs=c(1,0.9,0.8,0.5),nSplits=5,normalisation=minimalSeurat,maxPCs=100,approxPCA=FALSE,errorMetric=c('mse','poisson'),poissonMin=1e-6,confInt=0.95,...){
   errorMetric = match.arg(errorMetric)
+  if(is.null(varGenes))
+    varGenes = seq(nrow(dat))
   if(is.null(tFracs))
     tFracs=1
   titrate = length(tFracs)>1 || tFracs<1
