@@ -83,6 +83,7 @@ roundToInt = function(dat){
 #' Arbitrary normalisation requires equal splits of data.  To check that 50/50 split does not unde-estimate the number of PCs, it is useful to perform a series of "titrations" of tha data, to check the number of PCs is not sensative to the sampling depth.  There is no relationship between the optimum number of PCs for un-normalised data and normalised data, so it is best to live with the limitations of normalising data (50/50 split, need to titrate) than to do find the optimum for a type of normalisation you will not use in practice.
 #'
 #' @param dat Data matrix with rows being genes, columns being cells, and counts being integers.
+#' @param normalisation The normalisation that will be applied to the counts to produced a matrix of counts that will be fed directly into PCA.  For example, the included function minimalSeurat (or minimalSeuratV3 for Seurat V3) does the standard Seurat pre-processing steps run before PCA.
 #' @param varGenes Variable genes to use to perform the principal component analysis.  If NULL all genes are used.
 #' @param trainFrac Fraction of data to be used for training.
 #' @param p Fraction of total molecules sampled in experiment.
@@ -98,10 +99,10 @@ roundToInt = function(dat){
 #'
 #' @examples
 #' #Assuming srat is a Seurat v2.x object that has had FindVariableGenes run
-#' mcv = molecularCrossValidation(srat@raw.data,srat@var.genes)
+#' mcv = molecularCrossValidation(srat@raw.data,minimalSeurat,srat@var.genes)
 #' #If it is a v3.x object
-#' mcv = molecularCrossValidation(srat@assays$RNA@count,srat@assays$RNA@var.features,normalisation=minimalSeuratV3)
-molecularCrossValidation = function(dat,varGenes=NULL,trainFrac=0.5,p=0.01,tFracs=c(1,0.9,0.8,0.5),nSplits=5,normalisation=minimalSeurat,maxPCs=100,approxPCA=FALSE,errorMetric=c('mse','poisson'),poissonMin=1e-6,confInt=0.95,...){
+#' mcv = molecularCrossValidation(srat@assays$RNA@count,minimalSeuratV3,srat@assays$RNA@var.features)
+molecularCrossValidation = function(dat,normalisation,varGenes=NULL,trainFrac=0.5,p=0.01,tFracs=c(1,0.9,0.8,0.5),nSplits=5,maxPCs=100,approxPCA=FALSE,errorMetric=c('mse','poisson'),poissonMin=1e-6,confInt=0.95,...){
   errorMetric = match.arg(errorMetric)
   if(is.null(varGenes))
     varGenes = seq(nrow(dat))
