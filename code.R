@@ -1,7 +1,5 @@
 library(Matrix)
 library(Seurat)
-if('parallel' %in% rownames(installed.packages()))
-  library(parallel)
 
 #' Create test and training data splits.
 #'
@@ -80,42 +78,31 @@ roundToInt = function(dat){
 
 #' Finds the optimal number of PCs to use
 #'
-#' Uses molecular cross validation method (https://www.biorxiv.org/content/10.1101/786269v1), which must be applied to raw count data, to determine the optimal number of PCs to use for a given data-set.  This is intended to be run as part of a Seurat workflow, but is written so that it can be used in a general context.  If supplying a seurat object, FindVariableGenes must have been run, otherwise a set of genes on which to perform the principal component analysis must be supplied.
+#' Uses molecular cross validation method (https://www.biorxiv.org/content/10.1101/786269v1), which must be applied to raw count data, to determine the optimal number of PCs to use for a given data-set.  This is intended to be run as part of a Seurat v2 workflow, but is written so that it can be used in a general context.  If supplying a seurat object, FindVariableGenes must have been run, otherwise a set of genes on which to perform the principal component analysis must be supplied.
 #'
 #' Arbitrary normalisation requires equal splits of data.  To check that 50/50 split does not unde-estimate the number of PCs, it is useful to perform a series of "titrations" of tha data, to check the number of PCs is not sensative to the sampling depth.  There is no relationship between the optimum number of PCs for un-normalised data and normalised data, so it is best to live with the limitations of normalising data (50/50 split, need to titrate) than to do find the optimum for a type of normalisation you will not use in practice.
 #'
 #' @param dat Data matrix with rows being genes, columns being cells, and counts being integers.
-#' @param normalisation The normalisation that will be applied to the counts to produced a matrix of counts that will be fed directly into PCA.  For example, the included function minimalSeurat (or minimalSeuratV3 for Seurat V3) does the standard Seurat pre-processing steps run before PCA.
-#' @param varGenes Variable genes to use to perform the principal component analysis.  If NULL all genes are used.
+#' @param varGenes Variable genes to use to perform the principal component analysis.
 #' @param trainFrac Fraction of data to be used for training.
 #' @param p Fraction of total molecules sampled in experiment.
 #' @param tFracs Titration fractions.  A vector indicating how to sub-sample the data to test if results are sensative to the depth of sampling.  If NULL, just run one version with all the data.
-#' @param nSplits The number of random splits of the data to perform.
+#' @param nSplits The number of random splits of the data to performe.
 #' @param maxPCs Check up to this many PCs.
 #' @param approxPCA Use irlba instead of prcomp to speed up PCA at the expense of some accuracy.  Other things take so much longer in the analysis, please don't use approximate PCA.
 #' @param errorMetric Type of error to calculate.  Options are mse for mean squared erorr, or poisson, which calculates something proportional to the mean poisson log likelihood.
 #' @param poissonMin If the PCs predict a number of counts below this value, use this instead to prevent infinite log-likelihood and penalise predicting zeros/negative values. 
 #' @param confInt Used in quantifying the sampling error.  The function returns any PC that is within this confidence interval of the  minimum mean error.
-#' @param nCores Number of parallel processes to use.
 #' @param ... Extra parameters passed to normalisation function.
 #' @return A list.  Contains the average error across all cells for each titration and split of the data and various summaries thereof. 
 #'
 #' @examples
 #' #Assuming srat is a Seurat v2.x object that has had FindVariableGenes run
-#' mcv = molecularCrossValidation(srat@raw.data,minimalSeurat,srat@var.genes)
+#' mcv = molecularCrossValidation(srat@raw.data,srat@var.genes)
 #' #If it is a v3.x object
-#' mcv = molecularCrossValidation(srat@assays$RNA@count,minimalSeuratV3,srat@assays$RNA@var.features)
-molecularCrossValidation = function(dat,normalisation,varGenes=NULL,trainFrac=0.5,p=0.01,tFracs=c(1,0.9,0.8,0.5),nSplits=5,maxPCs=100,approxPCA=FALSE,errorMetric=c('mse','poisson'),poissonMin=1e-6,confInt=0.95,nCores=1,...){
-  if(nCores>1 && (!'parallel' %in% rownames(installed.packages()))){
-    warning("Package 'parallel' is required for multi-core execution.  Reverting to single threaded mode.")
-    nCores=1
-    mclapply=lapply
-  }
-  #Set option so mclapply acts like lapply
-  options(mc.cores=nCores)
+#' mcv = molecularCrossValidation(srat@assays$RNA@count,srat@assays$RNA@var.features,normalisation=minimalSeuratV3)
+molecularCrossValidation = function(dat,varGenes,trainFrac=0.5,p=0.01,tFracs=c(1,0.9,0.8,0.5),nSplits=5,normalisation=minimalSeurat,maxPCs=100,approxPCA=FALSE,errorMetric=c('mse','poisson'),poissonMin=1e-6,confInt=0.95,...){
   errorMetric = match.arg(errorMetric)
-  if(is.null(varGenes))
-    varGenes = seq(nrow(dat))
   if(is.null(tFracs))
     tFracs=1
   titrate = length(tFracs)>1 || tFracs<1
@@ -142,23 +129,14 @@ molecularCrossValidation = function(dat,normalisation,varGenes=NULL,trainFrac=0.
   #Work out alpha
   alpha = (1-trainFrac)/trainFrac
   titrates = list()
-  itrs = data.frame(tFrac = rep(tFracs,nSplits),
-                    split = rep(seq(nSplits),each=length(tFracs))
-                    )
-  titrates = mclapply(seq(nrow(itrs)),
-                      FUN = function(e,...){
-    tFrac = itrs$tFrac[e]
-    i = itrs$split[e]
-    mse = rep(NA,maxPCs-1)
-  #for(tFrac in tFracs){
+  for(tFrac in tFracs){
     if(titrate)
       message(sprintf("Running with %d%% of data",tFrac*100))
     #Calculate correction factor alpha
-    #mse = matrix(NA,nrow=nSplits,ncol=maxPCs-1)
-    #colnames(mse) = seq(2,maxPCs)
-    #rownames(mse) = paste0("Split",seq(nSplits))
-    #tt = mclapply(seq(nSplits),function(i) {
-    #for(i in seq(nSplits)){
+    mse = matrix(NA,nrow=nSplits,ncol=maxPCs-1)
+    colnames(mse) = seq(2,maxPCs)
+    rownames(mse) = paste0("Split",seq(nSplits))
+    for(i in seq(nSplits)){
       message(sprintf("Performing split %d of %d",i,nSplits)) 
       tst = partitionData(dat,alpha,p,tFrac)
       #Normalise data
@@ -183,29 +161,20 @@ molecularCrossValidation = function(dat,normalisation,varGenes=NULL,trainFrac=0.
         tmp = embed[,seq(k)] %*% rot[seq(k),]
         #Mean squared error
         if(errorMetric=='mse'){
-          #mse[i,k-1] = mean((tmp*alpha-tst)**2)
-          mse[k-1] = mean((tmp*alpha-tst)**2)
+          mse[i,k-1] = mean((tmp*alpha-tst)**2)
         }else if(errorMetric=='poisson'){
           a = as.vector(tmp*alpha)
           b = as.vector(tst)
           #Fix those that are below minimum
           a[a<poissonMin]=poissonMin
           #Calculate poisson negative log likelihood
-          #mse[i,k-1] = -1*mean(dpois(b,a,log=TRUE))
-          mse[k-1] = -1*mean(dpois(b,a,log=TRUE))
+          mse[i,k-1] = -1*mean(dpois(b,a,log=TRUE))
         }
       }
       close(pb)
-      #return(mse)
-    #})
-    return(mse)
-    #titrates[[length(titrates)+1]] = mse
-  },...)
-  #Merge into titrates
-  tmp = lapply(tFracs,function(e) seq(nrow(itrs))[itrs$tFrac==e])
-  names(tmp) = tFracs
-  titrates = lapply(tmp,function(e) do.call(rbind,titrates[e]))
-  names(titrates) = names(tmp)
+    }
+    titrates[[length(titrates)+1]] = mse
+  }
   #Now work out which PC did the best
   #Work out mean and limits
   lower = do.call(cbind,lapply(titrates,apply,2,min))
