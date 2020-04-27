@@ -1,5 +1,7 @@
 library(Matrix)
 library(Seurat)
+if('parallel' %in% rownames(installed.packages()))
+  library(parallel)
 
 #' Create test and training data splits.
 #'
@@ -94,6 +96,7 @@ roundToInt = function(dat){
 #' @param errorMetric Type of error to calculate.  Options are mse for mean squared erorr, or poisson, which calculates something proportional to the mean poisson log likelihood.
 #' @param poissonMin If the PCs predict a number of counts below this value, use this instead to prevent infinite log-likelihood and penalise predicting zeros/negative values. 
 #' @param confInt Used in quantifying the sampling error.  The function returns any PC that is within this confidence interval of the  minimum mean error.
+#' @param nCores Number of parallel processes to use.
 #' @param ... Extra parameters passed to normalisation function.
 #' @return A list.  Contains the average error across all cells for each titration and split of the data and various summaries thereof. 
 #'
@@ -102,7 +105,14 @@ roundToInt = function(dat){
 #' mcv = molecularCrossValidation(srat@raw.data,minimalSeurat,srat@var.genes)
 #' #If it is a v3.x object
 #' mcv = molecularCrossValidation(srat@assays$RNA@count,minimalSeuratV3,srat@assays$RNA@var.features)
-molecularCrossValidation = function(dat,normalisation,varGenes=NULL,trainFrac=0.5,p=0.01,tFracs=c(1,0.9,0.8,0.5),nSplits=5,maxPCs=100,approxPCA=FALSE,errorMetric=c('mse','poisson'),poissonMin=1e-6,confInt=0.95,...){
+molecularCrossValidation = function(dat,normalisation,varGenes=NULL,trainFrac=0.5,p=0.01,tFracs=c(1,0.9,0.8,0.5),nSplits=5,maxPCs=100,approxPCA=FALSE,errorMetric=c('mse','poisson'),poissonMin=1e-6,confInt=0.95,nCores=1,...){
+  if(nCores>1 && (!'parallel' %in% rownames(installed.packages()))){
+    warning("Package 'parallel' is required for multi-core execution.  Reverting to single threaded mode.")
+    nCores=1
+    mclapply=lapply
+  }
+  #Set option so mclapply acts like lapply
+  options(mc.cores=nCores)
   errorMetric = match.arg(errorMetric)
   if(is.null(varGenes))
     varGenes = seq(nrow(dat))
@@ -132,14 +142,23 @@ molecularCrossValidation = function(dat,normalisation,varGenes=NULL,trainFrac=0.
   #Work out alpha
   alpha = (1-trainFrac)/trainFrac
   titrates = list()
-  for(tFrac in tFracs){
+  itrs = data.frame(tFrac = rep(tFracs,nSplits),
+                    split = rep(seq(nSplits),each=length(tFracs))
+                    )
+  titrates = mclapply(seq(nrow(itrs)),
+                      FUN = function(e,...){
+    tFrac = itrs$tFrac[e]
+    i = itrs$split[e]
+    mse = rep(NA,maxPCs-1)
+  #for(tFrac in tFracs){
     if(titrate)
       message(sprintf("Running with %d%% of data",tFrac*100))
     #Calculate correction factor alpha
-    mse = matrix(NA,nrow=nSplits,ncol=maxPCs-1)
-    colnames(mse) = seq(2,maxPCs)
-    rownames(mse) = paste0("Split",seq(nSplits))
-    for(i in seq(nSplits)){
+    #mse = matrix(NA,nrow=nSplits,ncol=maxPCs-1)
+    #colnames(mse) = seq(2,maxPCs)
+    #rownames(mse) = paste0("Split",seq(nSplits))
+    #tt = mclapply(seq(nSplits),function(i) {
+    #for(i in seq(nSplits)){
       message(sprintf("Performing split %d of %d",i,nSplits)) 
       tst = partitionData(dat,alpha,p,tFrac)
       #Normalise data
@@ -164,20 +183,29 @@ molecularCrossValidation = function(dat,normalisation,varGenes=NULL,trainFrac=0.
         tmp = embed[,seq(k)] %*% rot[seq(k),]
         #Mean squared error
         if(errorMetric=='mse'){
-          mse[i,k-1] = mean((tmp*alpha-tst)**2)
+          #mse[i,k-1] = mean((tmp*alpha-tst)**2)
+          mse[k-1] = mean((tmp*alpha-tst)**2)
         }else if(errorMetric=='poisson'){
           a = as.vector(tmp*alpha)
           b = as.vector(tst)
           #Fix those that are below minimum
           a[a<poissonMin]=poissonMin
           #Calculate poisson negative log likelihood
-          mse[i,k-1] = -1*mean(dpois(b,a,log=TRUE))
+          #mse[i,k-1] = -1*mean(dpois(b,a,log=TRUE))
+          mse[k-1] = -1*mean(dpois(b,a,log=TRUE))
         }
       }
       close(pb)
-    }
-    titrates[[length(titrates)+1]] = mse
-  }
+      #return(mse)
+    #})
+    return(mse)
+    #titrates[[length(titrates)+1]] = mse
+  },...)
+  #Merge into titrates
+  tmp = lapply(tFracs,function(e) seq(nrow(itrs))[itrs$tFrac==e])
+  names(tmp) = tFracs
+  titrates = lapply(tmp,function(e) do.call(rbind,titrates[e]))
+  names(titrates) = names(tmp)
   #Now work out which PC did the best
   #Work out mean and limits
   lower = do.call(cbind,lapply(titrates,apply,2,min))
