@@ -7,7 +7,7 @@ A simple example of this in a Seurat (V2) workflow would be:
 
 
 ```
-source('code.R')
+source('https://raw.githubusercontent.com/constantAmateur/MCVR/master/code.R')
 #Load data and do basic Seurat 
 srat = Read10X(srcs)
 srat = CreateSeuratObject(srat)
